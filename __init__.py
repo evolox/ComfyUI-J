@@ -310,6 +310,9 @@ class GetAverageColorFromImage:
         }
 
     def run(self, image: torch.Tensor, average: str, mask: torch.Tensor = None):
+        if image.dim() == 4 and image.size(0) == 1:
+            image = image.squeeze(0).permute(2, 0, 1)
+
         if average == "mean":
             return self.run_avg(image, mask)
         elif average == "mode":
@@ -317,41 +320,40 @@ class GetAverageColorFromImage:
 
     def run_avg(self, image: torch.Tensor, mask: torch.Tensor = None):
         if mask is not None:
-            mask = mask.unsqueeze(1)
-        masked_image = image * mask if mask is not None else image
-        pixel_sum = torch.sum(masked_image, dim=(2, 3))
-        pixel_count = (
-            torch.sum(mask, dim=(2, 3))
-            if mask is not None
-            else torch.prod(torch.tensor(image.shape[2:]))
-        )
-        average_rgb = pixel_sum / pixel_count.unsqueeze(1)
+            if mask.dim() == 2:
+                mask = mask.unsqueeze(0).repeat(3, 1, 1).to(image.device)
+            masked_image = image * mask
+            pixel_sum = torch.sum(masked_image, dim=(1, 2))
+            pixel_count = torch.sum(mask, dim=(1, 2))
+        else:
+            masked_image = image
+            pixel_sum = torch.sum(masked_image, dim=(1, 2))
+            pixel_count = torch.tensor(
+                image.shape[1] * image.shape[2], device=image.device
+            )
 
-        average_rgb = torch.round(average_rgb)
+        average_rgb = pixel_sum / pixel_count
 
-        return tuple(average_rgb.squeeze().tolist())
+        return average_rgb.tolist()
 
     def run_mode(self, image: torch.Tensor, mask: torch.Tensor = None):
-        image = image.permute(0, 3, 1, 2)
+        image = image.permute(1, 2, 0).reshape(-1, 3)
         if mask is not None:
-            mask = mask.unsqueeze(1)
+            if mask.dim() == 2:
+                mask = mask.unsqueeze(0).repeat(3, 1, 1).to(image.device)
+            mask = mask.permute(1, 2, 0).reshape(-1, 1)
+            masked_image = image * mask
+        else:
+            masked_image = image
 
-        masked_image = image * mask if mask is not None else image
-        pixel_values = masked_image.view(
-            masked_image.shape[0], masked_image.shape[1], -1
-        )
-        pixel_values = pixel_values.permute(0, 2, 1)
-        pixel_values = pixel_values.reshape(-1, pixel_values.shape[2])
-        pixel_values = [
-            tuple(color.tolist()) for color in pixel_values.numpy() if color.max() > 0
-        ]
+        pixel_values = masked_image[masked_image.max(dim=1).values > 0].tolist()
 
         if not pixel_values:
-            return (0, 0, 0)
+            return (0.0, 0.0, 0.0)
 
-        color_counts = Counter(pixel_values)
-
-        return max(color_counts, key=color_counts.get)
+        color_counts = Counter([tuple(color) for color in pixel_values])
+        mode_color = max(color_counts, key=color_counts.get)
+        return tuple(float(x) for x in mode_color)
 
 
 class DiffusersXLPipeline:
